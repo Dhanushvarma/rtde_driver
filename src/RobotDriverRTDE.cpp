@@ -3,6 +3,8 @@
 #include <ur_client_library/comm/control_mode.h>
 #include <ur_client_library/control/reverse_interface.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/core.h>
@@ -130,6 +132,26 @@ void RobotDriverRTDE::sync()
   // Block until the robot delivers a new RTDE package — this paces the control loop.
   if(!driver_->getDataPackageBlocking(data_pkg_))
     fmt::print("[RobotDriverRTDE] Warning: failed to receive RTDE data package\n");
+
+  double robot_mode = 0.0;
+  double safety_mode = 0.0;
+  normal_ = data_pkg_ && readNumber(*data_pkg_, "robot_mode", robot_mode)
+            && readNumber(*data_pkg_, "safety_mode", safety_mode) && robot_mode == 7.0
+            && (safety_mode == 1.0 || safety_mode == 2.0);
+  // A stop (protective stop, e-stop, the program stopping) closes the gate: the next motion waits for the controller
+  // to catch up with the arm, whether the program stopped or only paused
+  if(!program_running_ || !normal_) gate_closed_ = true;
+  if(program_running_ || !normal_) return;
+
+  // The program stopped and the operator cleared the stop: send it again
+  const auto now = std::chrono::steady_clock::now();
+  if(now - last_resend_ > kResendPeriod)
+  {
+    last_resend_ = now;
+    const bool sent = driver_->sendRobotProgram();
+    fmt::print("[RobotDriverRTDE] Robot running again: {} the external-control program\n",
+               sent ? "sent" : "could not send");
+  }
 }
 
 std::vector<double> RobotDriverRTDE::getActualQ()
@@ -167,9 +189,29 @@ std::map<std::string, double> RobotDriverRTDE::getStatus()
 
 void RobotDriverRTDE::servoJ(const std::vector<double> & q)
 {
-  bool ok = driver_->writeJointCommand(toArr(q), urcl::comm::ControlMode::MODE_SERVOJ,
-                                       urcl::RobotReceiveTimeout::millisec(20));
-  if(!ok) std::cout << "[RobotDriverRTDE] servoJ: writeJointCommand returned false\n";
+  auto command = toArr(q);
+  if(gate_closed_)
+  {
+    // Hold the actual joints until the controller's command is close to them
+    urcl::vector6d_t actual;
+    if(!data_pkg_ || !data_pkg_->getData("actual_q", actual)) return;
+    double gap = 0.0;
+    for(size_t i = 0; i < actual.size(); ++i) gap = std::max(gap, std::abs(command[i] - actual[i]));
+    if(program_running_ && normal_ && gap < kGateTolerance)
+    {
+      gate_closed_ = false;
+      fmt::print("[RobotDriverRTDE] Following the controller's commands (within {:.4f} rad)\n", gap);
+    }
+    else
+    {
+      command = actual;
+    }
+  }
+  const bool ok = driver_->writeJointCommand(command, urcl::comm::ControlMode::MODE_SERVOJ,
+                                             urcl::RobotReceiveTimeout::millisec(20));
+  // Fails while the program does not run: said once per stop
+  if(!ok && !logged_write_failure_) std::cout << "[RobotDriverRTDE] servoJ: writeJointCommand returned false\n";
+  logged_write_failure_ = !ok;
 }
 
 void RobotDriverRTDE::speedJ(const std::vector<double> & alpha)

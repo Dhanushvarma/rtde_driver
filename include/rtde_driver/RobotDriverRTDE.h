@@ -4,6 +4,7 @@
 #include <robot_interface/driver/GripperInfo.h>
 
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -51,6 +52,17 @@ private:
   std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg_;
   // Set from urcl's thread when the external-control program starts or stops
   std::atomic<bool> program_running_{false};
+
+  // After a stop, the program is sent again once the robot is back in normal mode (see sync()). Until the controller's
+  // command comes within kGateTolerance of the actual joints, the arm holds where it stands: the controller's command
+  // may have moved while the arm was stopped.
+  static constexpr double kGateTolerance = 0.01; // rad
+  static constexpr std::chrono::seconds kResendPeriod{2};
+  bool gate_closed_ = true;
+  // robot_mode RUNNING and safety_mode NORMAL or REDUCED in the last package
+  bool normal_ = false;
+  bool logged_write_failure_ = false;
+  std::chrono::steady_clock::time_point last_resend_{};
 };
 
 } // namespace rtde_driver
