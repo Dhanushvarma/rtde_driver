@@ -3,6 +3,8 @@
 #include <robot_interface/RobotDriverTemplate.h>
 #include <robot_interface/driver/GripperInfo.h>
 
+#include <atomic>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +37,10 @@ public:
   void speedJ(const std::vector<double> & alpha) override;
   void tauJ(const std::vector<double> & tau) override;
 
+  // robot_mode, safety_mode and runtime_state from RTDE, and program_running: 1 while the external-control program
+  // runs (urcl's program state). A controller stops when the robot leaves normal mode or the program stops.
+  std::map<std::string, double> getStatus() override;
+
   // Enable / disable freedrive mode.
   bool freeDrive(bool enable);
 
@@ -43,6 +49,8 @@ private:
   std::vector<std::string> output_recipe_;
   std::unique_ptr<urcl::UrDriver> driver_;
   std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg_;
+  // Set from urcl's thread when the external-control program starts or stops
+  std::atomic<bool> program_running_{false};
 };
 
 } // namespace rtde_driver

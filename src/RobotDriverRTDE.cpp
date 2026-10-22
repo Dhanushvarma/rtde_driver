@@ -8,6 +8,7 @@
 #include <fmt/core.h>
 #include <iostream>
 #include <stdexcept>
+#include <variant>
 
 namespace
 {
@@ -44,6 +45,38 @@ inline urcl::vector6d_t toArr(const std::vector<double> & v)
   return a;
 }
 
+// A number from the data package. getData() needs the field's exact type (std::get on a variant), so the RTDE integer
+// types are tried in turn.
+bool readNumber(const urcl::rtde_interface::DataPackage & pkg, const std::string & name, double & out)
+{
+  try
+  {
+    int32_t v;
+    if(pkg.getData(name, v))
+    {
+      out = v;
+      return true;
+    }
+    return false;
+  }
+  catch(const std::bad_variant_access &)
+  {
+  }
+  try
+  {
+    uint32_t v;
+    if(pkg.getData(name, v))
+    {
+      out = v;
+      return true;
+    }
+  }
+  catch(const std::bad_variant_access &)
+  {
+  }
+  return false;
+}
+
 } // namespace
 
 namespace rtde_driver
@@ -54,7 +87,8 @@ RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, cons
 {
   fmt::print("[RobotDriverRTDE] Connecting to UR robot at {}\n", ip_);
 
-  output_recipe_ = {"actual_q", "actual_qd", "target_moment"};
+  // robot_mode, safety_mode and runtime_state go to the controller through getStatus()
+  output_recipe_ = {"actual_q", "actual_qd", "target_moment", "robot_mode", "safety_mode", "runtime_state"};
   // Minimal input recipe (speed override controls are useful but not strictly required).
   const std::vector<std::string> input_recipe = {"speed_slider_mask", "speed_slider_fraction"};
 
@@ -64,8 +98,11 @@ RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, cons
   config.output_recipe = output_recipe_;
   config.input_recipe = input_recipe;
   config.headless_mode = true;
-  config.handle_program_state = [](bool running)
-  { fmt::print("[RobotDriverRTDE] Program state: {}\n", running ? "running" : "stopped"); };
+  config.handle_program_state = [this](bool running)
+  {
+    program_running_ = running;
+    fmt::print("[RobotDriverRTDE] Program state: {}\n", running ? "running" : "stopped");
+  };
   // Give up after 3 socket attempts (default 0 = infinite) so the process
   // remains interruptible when the robot is unreachable.
   config.socket_reconnect_attempts = 3;
@@ -114,6 +151,18 @@ std::vector<double> RobotDriverRTDE::getJointTorques()
   urcl::vector6d_t tau;
   if(data_pkg_ && data_pkg_->getData("target_moment", tau)) return toVec(tau);
   return {};
+}
+
+std::map<std::string, double> RobotDriverRTDE::getStatus()
+{
+  std::map<std::string, double> status{{"program_running", program_running_ ? 1.0 : 0.0}};
+  if(!data_pkg_) return status;
+  for(const char * name : {"robot_mode", "safety_mode", "runtime_state"})
+  {
+    double value = 0.0;
+    if(readNumber(*data_pkg_, name, value)) status[name] = value;
+  }
+  return status;
 }
 
 void RobotDriverRTDE::servoJ(const std::vector<double> & q)
