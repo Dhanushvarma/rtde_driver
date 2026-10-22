@@ -58,11 +58,19 @@ private:
   // may have moved while the arm was stopped.
   static constexpr double kGateTolerance = 0.01; // rad
   static constexpr std::chrono::seconds kResendPeriod{2};
+  // The program sent at startup takes a moment to connect back: no re-send before this
+  static constexpr std::chrono::seconds kStartupGrace{5};
   bool gate_closed_ = true;
   // robot_mode RUNNING and safety_mode NORMAL or REDUCED in the last package
   bool normal_ = false;
+  // The external-control program runs: urcl's program state, and RTDE's runtime_state PLAYING. A power cycle can stop
+  // the program while its socket stays connected, so the socket alone is not enough
+  bool running_ = false;
+  // The program ran at the last cycle
+  bool was_running_ = false;
   bool logged_write_failure_ = false;
-  std::chrono::steady_clock::time_point last_resend_{};
+  // No re-send before this time: a startup grace, then kResendPeriod after each send
+  std::chrono::steady_clock::time_point next_send_{};
 };
 
 } // namespace rtde_driver

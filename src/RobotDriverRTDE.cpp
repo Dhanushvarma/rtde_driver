@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/core.h>
@@ -104,6 +105,7 @@ RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, cons
   {
     program_running_ = running;
     fmt::print("[RobotDriverRTDE] Program state: {}\n", running ? "running" : "stopped");
+    std::fflush(stdout);
   };
   // Give up after 3 socket attempts (default 0 = infinite) so the process
   // remains interruptible when the robot is unreachable.
@@ -115,6 +117,9 @@ RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, cons
 
   // Start RTDE communication without a background reader — sync() drives the loop via blocking reads.
   driver_->startRTDECommunication(false);
+
+  // The headless driver has just sent the program: give it time to connect back before sending it again
+  next_send_ = std::chrono::steady_clock::now() + kStartupGrace;
 
   // Pre-allocate the data package with the exact recipe to avoid per-cycle allocation.
   data_pkg_ = std::make_unique<urcl::rtde_interface::DataPackage>(driver_->getRTDEOutputRecipe());
@@ -135,22 +140,30 @@ void RobotDriverRTDE::sync()
 
   double robot_mode = 0.0;
   double safety_mode = 0.0;
+  double runtime_state = 0.0;
   normal_ = data_pkg_ && readNumber(*data_pkg_, "robot_mode", robot_mode)
             && readNumber(*data_pkg_, "safety_mode", safety_mode) && robot_mode == 7.0
             && (safety_mode == 1.0 || safety_mode == 2.0);
+  const bool playing = data_pkg_ && readNumber(*data_pkg_, "runtime_state", runtime_state)
+                       && runtime_state == static_cast<double>(urcl::rtde_interface::RUNTIME_STATE::PLAYING);
+  running_ = program_running_ && playing;
   // A stop (protective stop, e-stop, the program stopping) closes the gate: the next motion waits for the controller
   // to catch up with the arm, whether the program stopped or only paused
-  if(!program_running_ || !normal_) gate_closed_ = true;
-  if(program_running_ || !normal_) return;
+  if(!running_ || !normal_) gate_closed_ = true;
+  const auto now = std::chrono::steady_clock::now();
+  // A program that just stopped is sent again kResendPeriod later at the earliest
+  if(was_running_ && !running_) next_send_ = std::max(next_send_, now + kResendPeriod);
+  was_running_ = running_;
+  if(running_ || !normal_) return;
 
   // The program stopped and the operator cleared the stop: send it again
-  const auto now = std::chrono::steady_clock::now();
-  if(now - last_resend_ > kResendPeriod)
+  if(now >= next_send_)
   {
-    last_resend_ = now;
+    next_send_ = now + kResendPeriod;
     const bool sent = driver_->sendRobotProgram();
     fmt::print("[RobotDriverRTDE] Robot running again: {} the external-control program\n",
                sent ? "sent" : "could not send");
+    std::fflush(stdout);
   }
 }
 
@@ -177,7 +190,7 @@ std::vector<double> RobotDriverRTDE::getJointTorques()
 
 std::map<std::string, double> RobotDriverRTDE::getStatus()
 {
-  std::map<std::string, double> status{{"program_running", program_running_ ? 1.0 : 0.0}};
+  std::map<std::string, double> status{{"program_running", running_ ? 1.0 : 0.0}};
   if(!data_pkg_) return status;
   for(const char * name : {"robot_mode", "safety_mode", "runtime_state"})
   {
@@ -197,10 +210,11 @@ void RobotDriverRTDE::servoJ(const std::vector<double> & q)
     if(!data_pkg_ || !data_pkg_->getData("actual_q", actual)) return;
     double gap = 0.0;
     for(size_t i = 0; i < actual.size(); ++i) gap = std::max(gap, std::abs(command[i] - actual[i]));
-    if(program_running_ && normal_ && gap < kGateTolerance)
+    if(running_ && normal_ && gap < kGateTolerance)
     {
       gate_closed_ = false;
       fmt::print("[RobotDriverRTDE] Following the controller's commands (within {:.4f} rad)\n", gap);
+      std::fflush(stdout);
     }
     else
     {
