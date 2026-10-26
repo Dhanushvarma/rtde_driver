@@ -146,6 +146,27 @@ The driver requests the following RTDE fields from the robot:
 | `actual_q` | `getActualQ()` — joint positions \[rad\] |
 | `actual_qd` | `getActualQd()` — joint velocities \[rad/s\] |
 | `target_moment` | `getJointTorques()` — target joint torques \[Nm\] |
+| `robot_mode`, `safety_mode`, `runtime_state` | `getStatus()`, and the program re-send below |
+
+## Status, stops and recovery
+
+`getStatus()` reports, for the controller (URI puts them in the mc_rtc datastore as `URI::<robot>::status`):
+
+| Value | Meaning |
+|---|---|
+| `robot_mode` | RTDE robot mode, 7 = running |
+| `safety_mode` | RTDE safety mode, 1 = normal, 2 = reduced; 6 and 7 are emergency stops |
+| `runtime_state` | RTDE runtime state, 2 = playing |
+| `program_running` | 1 while the external-control program runs: urcl's program state and `runtime_state` playing (after a power cycle urcl's state can stay "running" for a stopped program) |
+
+After a stop (protective stop, emergency stop, the program stopping), once the robot is back in normal mode
+(`robot_mode` 7, `safety_mode` 1 or 2) with the program stopped, the driver sends the external-control program again:
+at most every 2 s, and not in the first 5 s after startup, while the program sent at startup connects back. The pendant
+must be in Remote Control for that.
+
+After any stop, the arm then holds its actual joints until the controller's command is within 0.01 rad of them, so a
+command that moved while the arm was stopped does not make it jump. This gate acts in `position` mode only (`servoJ`),
+not on `speedJ` or `tauJ`.
 
 ## Control loop
 
@@ -154,11 +175,12 @@ control loop at the robot's RTDE frequency (500 Hz by default).
 
 ```
 loop:
-  sync()          ← blocks, receives data package
+  sync()          ← blocks, receives data package; sends the program again after a stop
   getActualQ()    ← reads from the cached package
   getActualQd()
   getJointTorques()
-  servoJ(q)       ← sends position command (MODE_SERVOJ)
+  getStatus()     ← robot and safety modes, program state
+  servoJ(q)       ← sends position command (MODE_SERVOJ), or holds the arm after a stop
   speedJ(qd)      ← sends velocity command (MODE_SPEEDJ)
 ```
 

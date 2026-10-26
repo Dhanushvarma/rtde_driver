@@ -39,7 +39,8 @@ public:
   void tauJ(const std::vector<double> & tau) override;
 
   // robot_mode, safety_mode and runtime_state from RTDE, and program_running: 1 while the external-control program
-  // runs (urcl's program state). A controller stops when the robot leaves normal mode or the program stops.
+  // runs (urcl's program state, and RTDE's runtime_state PLAYING). A controller stops when the robot leaves normal mode
+  // or the program stops.
   std::map<std::string, double> getStatus() override;
 
   // Enable / disable freedrive mode.
@@ -55,7 +56,7 @@ private:
 
   // After a stop, the program is sent again once the robot is back in normal mode (see sync()). Until the controller's
   // command comes within kGateTolerance of the actual joints, the arm holds where it stands: the controller's command
-  // may have moved while the arm was stopped.
+  // may have moved while the arm was stopped. The gate acts in position mode only (servoJ), not on speedJ or tauJ.
   static constexpr double kGateTolerance = 0.01; // rad
   static constexpr std::chrono::seconds kResendPeriod{2};
   // The program sent at startup takes a moment to connect back: no re-send before this
