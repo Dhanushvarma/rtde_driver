@@ -223,6 +223,8 @@ bool Gripper::connect()
   try
   {
     socket_.open(host_, config_.port, config_.timeout);
+    // A new connection may find a power-cycled gripper: a failed activation no longer holds
+    activationFailed_ = false;
     const int sta = socket_.get(STA);
     const int pos = socket_.get(POS);
     {
