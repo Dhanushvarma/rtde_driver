@@ -54,7 +54,8 @@ struct GripperConfig
 /// - `gripper_stop`, `gripper_activate`: the NUC time of the newest stop or activation request. A value larger than the
 ///   last one asks for it; the first command only sets the reference, so a restart does not replay an old request.
 /// Whether a stop is needed (moving fingers, or at rest) is the controller's call, as stop_gripper's was; the status
-/// says which stop request was sent last (`gripper_stop_handled`) and whether the gripper acknowledged it.
+/// says which stop request was sent last (`gripper_stop_handled`) and whether the gripper acknowledged it, and which
+/// activation request was started last (`gripper_activate_handled`).
 class Gripper
 {
 public:
@@ -89,7 +90,8 @@ private:
 
   void run();
   bool connect();
-  void activate();
+  /// Activation and calibration, for the activation request of time `requested`
+  void activate(double requested);
   void calibrate();
   /// As robotiq_gripper.py's move_and_wait_for_pos: the final position and object status
   std::pair<int, int> moveAndWait(int position, int speed, int force);
@@ -120,6 +122,7 @@ private:
   bool activatePending_ = false;
   bool stopPending_ = false;
   double stopRequested_ = 0.0;
+  double activateRequested_ = 0.0;
   double target_ = std::numeric_limits<double>::quiet_NaN();
   double targetSpeed_ = 0.0;
   double targetForce_ = 0.0;
@@ -146,6 +149,8 @@ private:
   bool stopped_ = false;
   // The request time of the last stop sent, and whether the gripper acknowledged it
   double stopHandled_ = 0.0;
+  // The request time of the last activation started
+  double activateHandled_ = 0.0;
   bool stopAcked_ = false;
 };
 

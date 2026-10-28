@@ -227,6 +227,7 @@ the controller's decision.
 | `gripper_min`, `gripper_max` | The calibrated travel \[counts\], 0 and 255 until calibrated |
 | `gripper_target`, `gripper_last_move`, `gripper_stopped` | The last position written, when (CLOCK_REALTIME), and whether a stop holds the fingers since |
 | `gripper_stop_handled`, `gripper_stop_acked` | The request time of the last stop sent, and whether the gripper acknowledged it |
+| `gripper_activate_handled` | The request time of the last activation started |
 | `gripper_speed`, `gripper_force` | The defaults from the config |
 
 **Gripper joint.** When the URI robot config declares the gripper's joint (`grippers: {gripper: [<joint>]}`, one

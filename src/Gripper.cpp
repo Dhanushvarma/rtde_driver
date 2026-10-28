@@ -110,7 +110,11 @@ void Gripper::setCommandValues(const std::map<std::string, double> & values)
   std::lock_guard<std::mutex> lock(commandMutex_);
   if(seen_)
   {
-    if(activate > lastActivate_) activatePending_ = true;
+    if(activate > lastActivate_)
+    {
+      activatePending_ = true;
+      activateRequested_ = activate;
+    }
     if(stop > lastStop_)
     {
       stopPending_ = true;
@@ -141,6 +145,7 @@ void Gripper::addStatus(std::map<std::string, double> & status) const
   status["gripper_stopped"] = stopped_ ? 1.0 : 0.0;
   status["gripper_stop_handled"] = stopHandled_;
   status["gripper_stop_acked"] = stopAcked_ ? 1.0 : 0.0;
+  status["gripper_activate_handled"] = activateHandled_;
   status["gripper_speed"] = config_.speed;
   status["gripper_force"] = config_.force;
 }
@@ -175,6 +180,7 @@ void Gripper::run()
       bool activateNow = false;
       bool stopNow = false;
       double stopTime = 0.0;
+      double activateTime = 0.0;
       double target = 0.0;
       double speed = 0.0;
       double force = 0.0;
@@ -183,11 +189,12 @@ void Gripper::run()
         std::swap(activateNow, activatePending_);
         std::swap(stopNow, stopPending_);
         stopTime = stopRequested_;
+        activateTime = activateRequested_;
         target = target_;
         speed = targetSpeed_;
         force = targetForce_;
       }
-      if(activateNow) activate();
+      if(activateNow) activate(activateTime);
       if(stopNow) stopFingers(stopTime);
       if(std::isfinite(target)) write(target, speed, force);
       if(Clock::now() >= nextPoll)
@@ -254,10 +261,14 @@ bool Gripper::connect()
   }
 }
 
-void Gripper::activate()
+void Gripper::activate(double requested)
 {
   activationFailed_ = false;
-  setState(State::Activating);
+  {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    state_ = State::Activating;
+    activateHandled_ = requested;
+  }
   fmt::print("[RobotDriverRTDE] Gripper: activating\n");
   std::fflush(stdout);
   try

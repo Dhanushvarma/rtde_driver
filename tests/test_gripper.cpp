@@ -339,6 +339,7 @@ int main()
   v.activate = 200.0;
   gripper.setCommandValues(v.map());
   CHECK(waitUntil([&]() { return stateOf(gripper) == static_cast<double>(State::Activating); }, 1.0));
+  CHECK(statusOf(gripper)["gripper_activate_handled"] == 200.0);
   CHECK(waitUntil([&]() { return stateOf(gripper) == static_cast<double>(State::Active); }, 10.0));
   auto s = statusOf(gripper);
   CHECK(s["gripper_min"] == 3);
