@@ -160,13 +160,18 @@ The driver requests the following RTDE fields from the robot:
 | `program_running` | 1 while the external-control program runs: urcl's program state and `runtime_state` playing (after a power cycle urcl's state can stay "running" for a stopped program) |
 
 After a stop (protective stop, emergency stop, the program stopping), once the robot is back in normal mode
-(`robot_mode` 7, `safety_mode` 1 or 2) with the program stopped, the driver sends the external-control program again:
-at most every 2 s, and not in the first 5 s after startup, while the program sent at startup connects back. The pendant
-must be in Remote Control for that.
+(`robot_mode` 7, `safety_mode` 1 or 2) with the program stopped or paused, the driver sends the external-control
+program again: at most every 2 s, and not in the first 5 s after startup, while the program sent at startup connects
+back. The pendant must be in Remote Control for that.
 
 After any stop, the arm then holds its actual joints until the controller's command is within 0.01 rad of them, so a
 command that moved while the arm was stopped does not make it jump. This gate acts in `position` mode only (`servoJ`),
 not on `speedJ` or `tauJ`.
+
+Commands go to the program only while it plays (`program_running`). In Remote Control an emergency stop only pauses
+the program (seen on CALL-M on 2026-10-28): its socket stays open but nothing reads it, so commands written to it
+piled up until the write blocked the control loop, RTDE reads included, about 30 s after the stop. The program sent
+once the robot is back in normal mode replaces the paused one.
 
 ## Control loop
 
@@ -180,8 +185,8 @@ loop:
   getActualQd()
   getJointTorques()
   getStatus()     ← robot and safety modes, program state
-  servoJ(q)       ← sends position command (MODE_SERVOJ), or holds the arm after a stop
-  speedJ(qd)      ← sends velocity command (MODE_SPEEDJ)
+  servoJ(q)       ← sends position command (MODE_SERVOJ) while the program plays, or holds the arm after a stop
+  speedJ(qd)      ← sends velocity command (MODE_SPEEDJ) while the program plays
 ```
 
 ## Plugin API

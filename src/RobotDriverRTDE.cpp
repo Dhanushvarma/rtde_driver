@@ -156,7 +156,8 @@ void RobotDriverRTDE::sync()
   was_running_ = running_;
   if(running_ || !normal_) return;
 
-  // The program stopped and the operator cleared the stop: send it again
+  // The program stopped or paused and the operator cleared the stop: send it again. A program sent now replaces a
+  // paused one, as when uri manager restarted after an e-stop in Remote Control (2026-10-28)
   if(now >= next_send_)
   {
     next_send_ = now + kResendPeriod;
@@ -202,6 +203,9 @@ std::map<std::string, double> RobotDriverRTDE::getStatus()
 
 void RobotDriverRTDE::servoJ(const std::vector<double> & q)
 {
+  // Commands go to the program only while it plays. A paused program (an e-stop in Remote Control pauses it) keeps its
+  // socket open but reads nothing: the commands would pile up until the write blocks this loop, RTDE reads included
+  if(!running_) return;
   auto command = toArr(q);
   if(gate_closed_)
   {
@@ -210,7 +214,7 @@ void RobotDriverRTDE::servoJ(const std::vector<double> & q)
     if(!data_pkg_ || !data_pkg_->getData("actual_q", actual)) return;
     double gap = 0.0;
     for(size_t i = 0; i < actual.size(); ++i) gap = std::max(gap, std::abs(command[i] - actual[i]));
-    if(running_ && normal_ && gap < kGateTolerance)
+    if(normal_ && gap < kGateTolerance)
     {
       gate_closed_ = false;
       fmt::print("[RobotDriverRTDE] Following the controller's commands (within {:.4f} rad)\n", gap);
@@ -223,19 +227,23 @@ void RobotDriverRTDE::servoJ(const std::vector<double> & q)
   }
   const bool ok = driver_->writeJointCommand(command, urcl::comm::ControlMode::MODE_SERVOJ,
                                              urcl::RobotReceiveTimeout::millisec(20));
-  // Fails while the program does not run: said once per stop
+  // Fails when the program stopped since the last package: said once per stop
   if(!ok && !logged_write_failure_) std::cout << "[RobotDriverRTDE] servoJ: writeJointCommand returned false\n";
   logged_write_failure_ = !ok;
 }
 
 void RobotDriverRTDE::speedJ(const std::vector<double> & alpha)
 {
+  // Only while the program plays, as in servoJ()
+  if(!running_) return;
   driver_->writeJointCommand(toArr(alpha), urcl::comm::ControlMode::MODE_SPEEDJ,
                              urcl::RobotReceiveTimeout::millisec(20));
 }
 
 void RobotDriverRTDE::tauJ(const std::vector<double> & tau)
 {
+  // Only while the program plays, as in servoJ()
+  if(!running_) return;
   driver_->writeJointCommand(toArr(tau), urcl::comm::ControlMode::MODE_TORQUE, urcl::RobotReceiveTimeout::millisec(20));
 }
 
