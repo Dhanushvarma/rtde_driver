@@ -215,6 +215,8 @@ void Gripper::run()
       socket_.close();
       lastCommand_.reset();
       setState(State::Disconnected);
+      // Not at once: a gripper socket that accepts and then fails would otherwise be reconnected in a tight loop
+      pause(0.1);
       continue;
     }
     next += period;
