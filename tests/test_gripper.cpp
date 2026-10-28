@@ -404,6 +404,8 @@ int main()
   gripper.setCommandValues(v.map());
   CHECK(waitUntil([&]() { return fake.countSets("SET GTO 0") == 1; }, 1.0));
   CHECK(waitUntil([&]() { return statusOf(gripper)["gripper_stopped"] == 1.0; }, 1.0));
+  CHECK(statusOf(gripper)["gripper_stop_handled"] == 300.0);
+  CHECK(statusOf(gripper)["gripper_stop_acked"] == 1.0);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   CHECK(fake.sets().size() == 1);
   v.position = 4;
