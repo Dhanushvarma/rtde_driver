@@ -100,7 +100,8 @@ cmake --build .
 cmake --install .
 ```
 
-The plugin is installed to `lib/robot_interface/libRobotDriverRTDE.so`.
+The plugin is installed to `lib/robot_interface/libRobotDriverRTDE.so`. With `-DBUILD_TESTING=ON`, `ctest` runs
+`test_gripper`, the gripper against a fake Robotiq URCap socket on localhost (no robot needed).
 
 ## Robot-side setup
 
@@ -147,6 +148,11 @@ The driver requests the following RTDE fields from the robot:
 | `actual_qd` | `getActualQd()` — joint velocities \[rad/s\] |
 | `target_moment` | `getJointTorques()` — target joint torques \[Nm\] |
 | `robot_mode`, `safety_mode`, `runtime_state` | `getStatus()`, and the program re-send below |
+| `timestamp` | `getStatus()` `timestamp`: the UR's own sample time \[s\] |
+| `actual_TCP_force`, `actual_TCP_pose` | `getStatus()` `tcp_force_0..5`, `tcp_pose_0..5` |
+
+`getStatus()` also gives `read_time`: this host's CLOCK_REALTIME when the package arrived \[s\], so a controller can
+keep a history of the arm's state on the clock its other times use.
 
 ## Status, stops and recovery
 
@@ -172,6 +178,62 @@ Commands go to the program only while it plays (`program_running`). In Remote Co
 the program (seen on CALL-M on 2026-10-28): its socket stays open but nothing reads it, so commands written to it
 piled up until the write blocked the control loop, RTDE reads included, about 30 s after the stop. The program sent
 once the robot is back in normal mode replaces the paused one.
+
+## Gripper
+
+A Robotiq 2F gripper behind the Robotiq URCap's socket on the UR control box (port 63352), driven on its own thread so
+the RTDE loop never waits on it. It is on when the driver config file (`robot_interface.config_path`) has a `gripper`
+section:
+
+```yaml
+gripper:
+  # host: 192.168.1.2   # [optional] the robot's address by default
+  port: 63352
+  speed: 150             # 0..255, for targets that give none
+  force: 10              # 0..255, likewise
+  poll_rate: 100         # position polls per second
+  command_rate: 200      # command loop rate: at most this many writes per second
+  timeout: 1.0           # socket timeout [s]
+  closed_angle: 0.8      # finger joint angle at 255 counts [rad], for the gripper joint below
+```
+
+The rules are those of callm_controller's `arm.py` (CALL-M's Python stack): the gripper activates only on request
+(reset if needed, activate, then calibrate the travel by opening, closing and opening); a target is clipped to the
+calibrated travel, a repeat of the live command is not sent, nor a step under 3 counts except onto either end of the
+travel; one request at a time, each waiting for its ack, and a write whose ack is lost is sent again; a stop is
+`rGTO = 0`, after which the next target goes out even if it repeats the last one. A lost socket is opened again every
+second.
+
+The controller drives it with `setCommandValues()` (URI's `URI::<robot>::command` datastore entry), every command:
+
+| Value | Meaning |
+|---|---|
+| `gripper_position` | Target \[counts, 0 open .. 255 closed\]; NaN: none |
+| `gripper_speed`, `gripper_force` | For that target \[0..255\] |
+| `gripper_stop` | The NUC time of the newest stop request: a larger value than the last one stops the fingers |
+| `gripper_activate` | Likewise for activation |
+
+The first command only sets the reference for `gripper_stop` and `gripper_activate`, so a restarted driver does not
+replay an old request. Whether a stop is needed at all (fingers moving, or at rest on their target or an object) is
+the controller's decision.
+
+`getStatus()` adds:
+
+| Value | Meaning |
+|---|---|
+| `gripper_state` | 1 disconnected, 2 not active, 3 activating, 4 active, 5 fault (a failed activation, or the gripper's FLT) |
+| `gripper_position`, `gripper_poll_time` | Newest polled position \[counts\], and this host's CLOCK_REALTIME after that read \[s\] |
+| `gripper_object`, `gripper_status`, `gripper_fault` | The gripper's OBJ (0 moving, 1 and 2 stopped on an object, 3 at the target), STA (3 active) and FLT (0 no fault) |
+| `gripper_min`, `gripper_max` | The calibrated travel \[counts\], 0 and 255 until calibrated |
+| `gripper_target`, `gripper_last_move`, `gripper_stopped` | The last position written, when (CLOCK_REALTIME), and whether a stop holds the fingers since |
+| `gripper_speed`, `gripper_force` | The defaults from the config |
+
+**Gripper joint.** When the URI robot config declares the gripper's joint (`grippers: {gripper: [<joint>]}`, one
+gripper with one joint), `getActualQ()` reports it after the six arm joints: `position / 255 * closed_angle`. Its
+velocity and torque are 0, and commands for it are ignored: the gripper moves only on the values above.
+
+Only one program may drive the gripper socket: do not run another gripper client (such as callm_controller's server)
+next to a driver with a `gripper` section.
 
 ## Control loop
 

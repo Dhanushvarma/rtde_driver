@@ -3,6 +3,8 @@
 #include <robot_interface/RobotDriverTemplate.h>
 #include <robot_interface/driver/GripperInfo.h>
 
+#include <rtde_driver/Gripper.h>
+
 #include <atomic>
 #include <chrono>
 #include <map>
@@ -19,10 +21,13 @@ namespace rtde_driver
 class RobotDriverRTDE : public robot_interface::RobotDriver
 {
 public:
-  // config_path: unused by this driver (RTDE is configured entirely via ip/port),
-  // but present so every RobotDriver's create() shares the same signature —
-  // see robot_interface/PluginLoader.h and RobotInterface::loadDriver().
-  RobotDriverRTDE(const std::string & ip, uint16_t port = 0, const std::string & config_path = "");
+  // config_path: optional driver config file (robot_interface.config_path); its `gripper` section drives a Robotiq
+  // gripper through the UR's URCap socket (see Gripper). grippers: the robot's grippers in the URI config (`grippers:`,
+  // name and joints); a declared gripper joint is reported after the six arm joints, from the gripper's position.
+  RobotDriverRTDE(const std::string & ip,
+                  uint16_t port = 0,
+                  const std::string & config_path = "",
+                  const std::vector<robot_interface::GripperInfo> & grippers = {});
 
   ~RobotDriverRTDE() override;
 
@@ -40,15 +45,28 @@ public:
 
   // robot_mode, safety_mode and runtime_state from RTDE, and program_running: 1 while the external-control program
   // runs (urcl's program state, and RTDE's runtime_state PLAYING). A controller stops when the robot leaves normal mode
-  // or the program stops.
+  // or the program stops. Also, for the controller's state history: timestamp (the UR's own sample time [s]),
+  // read_time (this host's CLOCK_REALTIME when the package arrived [s]), tcp_force_0..5 and tcp_pose_0..5 (RTDE's
+  // actual_TCP_force and actual_TCP_pose); and the gripper's values (Gripper::addStatus) when there is one.
   std::map<std::string, double> getStatus() override;
+
+  // The gripper's command values (Gripper::setCommandValues); ignored without a gripper
+  void setCommandValues(const std::map<std::string, double> & values) override;
 
   // Enable / disable freedrive mode.
   bool freeDrive(bool enable);
 
 private:
+  /// The six arm joints, then the gripper joint when there is one
+  std::vector<double> withGripperJoint(std::vector<double> arm, double gripper) const;
+
   std::string ip_;
   std::vector<std::string> output_recipe_;
+  std::unique_ptr<Gripper> gripper_;
+  // A gripper joint is declared in the URI config: one more value after the arm's
+  bool gripper_joint_ = false;
+  // This host's CLOCK_REALTIME when the last package arrived [s]
+  double read_time_ = 0.0;
   std::unique_ptr<urcl::UrDriver> driver_;
   std::unique_ptr<urcl::rtde_interface::DataPackage> data_pkg_;
   // Set from urcl's thread when the external-control program starts or stops
@@ -83,9 +101,7 @@ extern "C"
 {
   ROBOT_DRIVER_DLLAPI void ROBOT_DRIVER_PLUGIN(std::vector<std::string> & classes);
 
-  // grippers: unused by this driver (RTDE robots have no grippers), but
-  // present so every RobotDriver's create() shares the same signature —
-  // see robot_interface/PluginLoader.h and RobotInterface::loadDriver().
+  // grippers: the URI config's grippers of this robot, see RobotDriverRTDE's constructor
   ROBOT_DRIVER_DLLAPI robot_interface::RobotDriver * create(const std::string & name,
                                                             const std::string & ip,
                                                             const uint16_t & port,

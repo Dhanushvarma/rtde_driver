@@ -85,13 +85,37 @@ bool readNumber(const urcl::rtde_interface::DataPackage & pkg, const std::string
 namespace rtde_driver
 {
 
-RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, const std::string & /*config_path*/)
+RobotDriverRTDE::RobotDriverRTDE(const std::string & ip,
+                                 uint16_t /*port*/,
+                                 const std::string & config_path,
+                                 const std::vector<robot_interface::GripperInfo> & grippers)
 : ip_(ip)
 {
+  // Read before connecting, so a bad file fails at once
+  const auto gripper_config = GripperConfig::load(config_path);
+  for(const auto & gripper : grippers)
+  {
+    if(gripper.joints.size() != 1 || gripper_joint_)
+    {
+      throw std::invalid_argument("[RobotDriverRTDE] One gripper with one joint at most: the joint after the arm's, "
+                                  "from the gripper's position");
+    }
+    gripper_joint_ = true;
+    fmt::print("[RobotDriverRTDE] Gripper '{}': its joint '{}' comes after the arm's\n", gripper.name,
+               gripper.joints.front());
+  }
+  if(gripper_joint_ && !gripper_config.enabled)
+  {
+    fmt::print("[RobotDriverRTDE] Warning: a gripper joint but no gripper section in the driver config: the joint "
+               "stays at 0\n");
+  }
+
   fmt::print("[RobotDriverRTDE] Connecting to UR robot at {}\n", ip_);
 
-  // robot_mode, safety_mode and runtime_state go to the controller through getStatus()
-  output_recipe_ = {"actual_q", "actual_qd", "target_moment", "robot_mode", "safety_mode", "runtime_state"};
+  // robot_mode, safety_mode and runtime_state go to the controller through getStatus(), and so do the sample time, the
+  // TCP force and the TCP pose, for its state history and log
+  output_recipe_ = {"actual_q",      "actual_qd", "target_moment",    "robot_mode",     "safety_mode",
+                    "runtime_state", "timestamp", "actual_TCP_force", "actual_TCP_pose"};
   // Minimal input recipe (speed override controls are useful but not strictly required).
   const std::vector<std::string> input_recipe = {"speed_slider_mask", "speed_slider_fraction"};
 
@@ -125,10 +149,13 @@ RobotDriverRTDE::RobotDriverRTDE(const std::string & ip, uint16_t /*port*/, cons
   data_pkg_ = std::make_unique<urcl::rtde_interface::DataPackage>(driver_->getRTDEOutputRecipe());
 
   fmt::print("[RobotDriverRTDE] Connected to {}\n", ip_);
+
+  if(gripper_config.enabled) gripper_ = std::make_unique<Gripper>(gripper_config, ip_);
 }
 
 RobotDriverRTDE::~RobotDriverRTDE()
 {
+  gripper_.reset();
   if(driver_) driver_->stopControl();
 }
 
@@ -137,6 +164,8 @@ void RobotDriverRTDE::sync()
   // Block until the robot delivers a new RTDE package — this paces the control loop.
   if(!driver_->getDataPackageBlocking(data_pkg_))
     fmt::print("[RobotDriverRTDE] Warning: failed to receive RTDE data package\n");
+  // Stamped on this side of the read, as callm_controller's state ring stamps robot_receive_timestamp
+  read_time_ = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 
   double robot_mode = 0.0;
   double safety_mode = 0.0;
@@ -168,24 +197,31 @@ void RobotDriverRTDE::sync()
   }
 }
 
+std::vector<double> RobotDriverRTDE::withGripperJoint(std::vector<double> arm, double gripper) const
+{
+  if(gripper_joint_ && !arm.empty()) arm.push_back(gripper);
+  return arm;
+}
+
 std::vector<double> RobotDriverRTDE::getActualQ()
 {
   urcl::vector6d_t q;
-  if(data_pkg_ && data_pkg_->getData("actual_q", q)) return toVec(q);
+  if(data_pkg_ && data_pkg_->getData("actual_q", q))
+    return withGripperJoint(toVec(q), gripper_ ? gripper_->angle() : 0.0);
   return {};
 }
 
 std::vector<double> RobotDriverRTDE::getActualQd()
 {
   urcl::vector6d_t qd;
-  if(data_pkg_ && data_pkg_->getData("actual_qd", qd)) return toVec(qd);
+  if(data_pkg_ && data_pkg_->getData("actual_qd", qd)) return withGripperJoint(toVec(qd), 0.0);
   return {};
 }
 
 std::vector<double> RobotDriverRTDE::getJointTorques()
 {
   urcl::vector6d_t tau;
-  if(data_pkg_ && data_pkg_->getData("target_moment", tau)) return toVec(tau);
+  if(data_pkg_ && data_pkg_->getData("target_moment", tau)) return withGripperJoint(toVec(tau), 0.0);
   return {};
 }
 
@@ -198,7 +234,25 @@ std::map<std::string, double> RobotDriverRTDE::getStatus()
     double value = 0.0;
     if(readNumber(*data_pkg_, name, value)) status[name] = value;
   }
+  double timestamp = 0.0;
+  if(data_pkg_->getData("timestamp", timestamp)) status["timestamp"] = timestamp;
+  status["read_time"] = read_time_;
+  urcl::vector6d_t v;
+  if(data_pkg_->getData("actual_TCP_force", v))
+  {
+    for(size_t i = 0; i < v.size(); ++i) status[fmt::format("tcp_force_{}", i)] = v[i];
+  }
+  if(data_pkg_->getData("actual_TCP_pose", v))
+  {
+    for(size_t i = 0; i < v.size(); ++i) status[fmt::format("tcp_pose_{}", i)] = v[i];
+  }
+  if(gripper_) gripper_->addStatus(status);
   return status;
+}
+
+void RobotDriverRTDE::setCommandValues(const std::map<std::string, double> & values)
+{
+  if(gripper_) gripper_->setCommandValues(values);
 }
 
 void RobotDriverRTDE::servoJ(const std::vector<double> & q)
@@ -271,9 +325,9 @@ extern "C"
                                         const std::string & ip,
                                         const uint16_t & port,
                                         const std::string & config_path,
-                                        const std::vector<robot_interface::GripperInfo> & /*grippers*/)
+                                        const std::vector<robot_interface::GripperInfo> & grippers)
   {
-    return new rtde_driver::RobotDriverRTDE(ip, port, config_path);
+    return new rtde_driver::RobotDriverRTDE(ip, port, config_path, grippers);
   }
 
   void destroy(robot_interface::RobotDriver * ptr)

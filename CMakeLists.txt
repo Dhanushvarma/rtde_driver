@@ -13,23 +13,21 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(GNUInstallDirs)
 
-# enable_testing()
-
 option(BUILD_TESTING "Build tests" OFF)
 
 # Dependencies
 find_package(unified_robot_interface REQUIRED)
 find_package(ur_client_library REQUIRED)
 find_package(fmt REQUIRED)
+find_package(mc_rtc REQUIRED)
+find_package(Threads REQUIRED)
 
 # Add Subdirectories
 add_subdirectory(src)
 
-# cmake-format: off
-# # Optional Testing
-# if(BUILD_TESTING)
-#   add_subdirectory(tests)
-# endif()
-# cmake-format: on
+if(BUILD_TESTING)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
 install(DIRECTORY include/ DESTINATION include)
